@@ -189,7 +189,7 @@ class Script(modules.scripts.Script):
         with gr.Accordion(f"LoRA Block Weight : {active_i if is_img2img else active_t}",open = False) as acc:
             with gr.Row():
                 with gr.Column(min_width = 50, scale=1):
-                    lbw_useblocks =  gr.Checkbox(value = False,label="Active",interactive =True,elem_id="lbw_active")
+                    lbw_useblocks =  gr.Checkbox(value = True,label="Active",interactive =True,elem_id="lbw_active")
                     debug =  gr.Checkbox(value = False,label="Debug",interactive =True,elem_id="lbw_debug")
                 with gr.Column(scale=5):
                     bw_ratiotags= gr.TextArea(label="",value=ratiostags,visible =True,interactive =True,elem_id="lbw_ratios") 
@@ -810,16 +810,12 @@ def importer(self):
         lora_module = importlib.import_module("lora")
         return lora_module
 
-def loradealer(self, prompts, lratios, elementals, extra_network_data=None):
+def loradealer(self, prompts,lratios,elementals, extra_network_data = None):
     if extra_network_data is None:
         _, extra_network_data = extra_networks.parse_prompts(prompts)
     moduletypes = extra_network_data.keys()
-    total_steps = shared.state.sampling_steps
 
     for ltype in moduletypes:
-        if not (ltype == "lora" or ltype == "lyco"):
-            continue
-
         lorans = []
         lorars = []
         te_multipliers = []
@@ -827,138 +823,45 @@ def loradealer(self, prompts, lratios, elementals, extra_network_data=None):
         elements = []
         starts = []
         stops = []
+        fparams = []
         load = False
         go_lbw = False
-
+        
+        if not (ltype == "lora" or ltype == "lyco") : continue
         for called in extra_network_data[ltype]:
             items = called.items
             setnow = False
             name = items[0]
-            base_weight = 1.0
+            te = syntaxdealer(items,"te=",1)
+            unet = syntaxdealer(items,"unet=",2)
+            te,unet = multidealer(te,unet)
 
-            # Parse LoRA Control format first
-            lora_control = None
-            block_weights = None
+            weights = syntaxdealer(items,"lbw=",2) if syntaxdealer(items,"lbw=",2) is not None else syntaxdealer(items,"w=",2)
+            elem = syntaxdealer(items, "lbwe=",3)
+            start = syntaxdealer(items,"start=",None)
+            stop = syntaxdealer(items,"stop=",None)
+            start, stop = stepsdealer(syntaxdealer(items,"step=",None), start, stop)
             
-            # First check for base weight in second position
-            if len(items) > 1 and not items[1].startswith('lbw=') and '@' not in items[1]:
-                try:
-                    base_weight = float(items[1])
-                except ValueError:
-                    pass
-
-            # Check for explicit block weights in any position
-            for i, item in enumerate(items[1:], 1):
-                if item.startswith('lbw='):
-                    block_weights = item.replace('lbw=', '')
-                    break
-                # Check if it's a comma-separated list of numbers matching the expected length
-                elif ',' in item and any(len(item.split(',')) == x for x in BLOCKNUMS):
-                    block_weights = item
-                    break
-
-            # Then check for LoRA Control format
-            for i, item in enumerate(items[1:], 1):
-                if '@' in item:
-                    lora_control = item
-                    base_weight = 1.0  # Reset base_weight for LoRA Control
-                    # If we found LoRA Control format but no block weights yet, check next item
-                    if block_weights is None and i + 1 < len(items):
-                        next_item = items[i + 1]
-                        if ',' in next_item and any(len(next_item.split(',')) == x for x in BLOCKNUMS):
-                            block_weights = next_item
-                    break
-
-            if lora_control:
-                parts = [part.strip() for part in lora_control.split(',')]
-                weights = []
-                timesteps = []
-                for part in parts:
-                    if '@' in part:
-                        weight, timestep = part.split('@')
-                        weights.append(float(weight))
-                        step = int(float(timestep) * total_steps) if '.' in timestep else int(timestep)
-                        timesteps.append(step)
-                
-                te = unet = weights[0]
-                
-                if len(timesteps) > 1:
-                    start = min(timesteps)
-                    stop = max(timesteps)
-                else:
-                    start = timesteps[0] if timesteps else None
-                    stop = None
-                
-                print(f"LoRA Control format detected: weights={weights}, steps={timesteps}, total_steps={total_steps}")
-            else:
-                te = syntaxdealer(items, "te=", 1)
-                unet = syntaxdealer(items, "unet=", 2)
-                if te is None and len(items) > 1:
-                    try:
-                        te = float(items[1])
-                    except:
-                        te = 1.0
-                if unet is None and len(items) > 2:
-                    try:
-                        unet = float(items[2])
-                    except:
-                        unet = te
-                te, unet = multidealer(te, unet)
-                start = stop = None
-
-            # Process block weights
-            if block_weights:
-                try:
-                    if block_weights in lratios:
-                        wei = lratios[block_weights]
-                        ratios = [w.strip() for w in wei.split(",")]
+            if weights is not None and (weights in lratios or any(weights.count(",") == x - 1 for x in BLOCKNUMS)):
+                wei = lratios[weights] if weights in lratios else weights
+                ratios = [w.strip() for w in wei.split(",")]
+                for i,r in enumerate(ratios):
+                    if r =="R":
+                        ratios[i] = round(random.random(),3)
+                    elif r == "U":
+                        ratios[i] = round(random.uniform(-0.5,1.5),3)
+                    elif r[0] == "X":
+                        base = syntaxdealer(items,"x=", 3) if len(items) >= 4 else 1
+                        ratios[i] = getinheritedweight(base, r)
                     else:
-                        ratios = [w.strip() for w in block_weights.split(",")]
-                    
-                    for i, r in enumerate(ratios):
-                        if r == "R":
-                            ratios[i] = round(random.random(), 3) * base_weight
-                        elif r == "U":
-                            ratios[i] = round(random.uniform(-0.5, 1.5), 3) * base_weight
-                        elif r[0] == "X":
-                            base = syntaxdealer(items, "x=", 3) if len(items) >= 4 else 1
-                            ratios[i] = getinheritedweight(base, r) * base_weight
-                        else:
-                            ratios[i] = float(r) * base_weight
-                    
-                    if len(ratios) != 26:
-                        ratios = to26(ratios)
-                    setnow = True
-                    print(f"Block weights applied (base weight {base_weight}): {ratios}")
-                except ValueError as e:
-                    print(f"Warning: Could not parse block weights: {block_weights}")
-                    print(f"Error: {e}")
-                    ratios = [base_weight] * 26
+                        ratios[i] = float(r)
+                        
+                if len(ratios) != 26:
+                    ratios = to26(ratios)
+                setnow = True
             else:
-                # Handle direct block weights format (when weights are the only parameter)
-                if len(items) == 2 and ',' in items[1] and any(len(items[1].split(',')) == x for x in BLOCKNUMS):
-                    try:
-                        ratios = [float(w.strip()) for w in items[1].split(",")]
-                        if len(ratios) != 26:
-                            ratios = to26(ratios)
-                        setnow = True
-                        print(f"Direct block weights applied: {ratios}")
-                    except ValueError:
-                        ratios = [base_weight] * 26
-                else:
-                    ratios = [base_weight] * 26
+                ratios = [1] * 26
 
-            # Check for explicit start/stop parameters
-            for i, item in enumerate(items):
-                if item == "start=" and i + 1 < len(items):
-                    start = int(items[i + 1])
-                elif item == "stop=" and i + 1 < len(items):
-                    stop = int(items[i + 1])
-                elif item.startswith("step="):
-                    start, stop = map(int, item.replace("step=", "").split("-"))
-
-            # Handle elements
-            elem = syntaxdealer(items, "lbwe=", 3)
             if elem in elementals:
                 setnow = True
                 elem = elementals[elem]
@@ -968,30 +871,26 @@ def loradealer(self, prompts, lratios, elementals, extra_network_data=None):
             if setnow:
                 print(f"LoRA Block weight ({ltype}): {name}: (Te:{te},Unet:{unet}) x {ratios}")
                 go_lbw = True
+            fparams.append([unet,ratios,elem])
+            settolist([lorans,te_multipliers,unet_multipliers,lorars,elements,starts,stops],[name,te,unet,ratios,elem,start,stop])
 
-            settolist([lorans, te_multipliers, unet_multipliers, lorars, elements, starts, stops],
-                     [name, te, unet, ratios, elem, start, stop])
-
-            if start is not None:
-                self.starts[name] = [int(start), te, unet]
+            if start:
+                self.starts[name] = [int(start),te,unet]
                 self.log["starts"] = load = True
 
-            if stop is not None:
+            if stop:
                 self.stops[name] = int(stop)
                 self.log["stops"] = load = True
-
+        
         self.startsf = [int(s) if s is not None else None for s in starts]
         self.stopsf = [int(s) if s is not None else None for s in stops]
         self.uf = unet_multipliers
         self.lf = lorars
         self.ef = elements
 
-        if self.isnet:
-            ltype = "nets"
-        if forge:
-            ltype = "forge"
-        if go_lbw or load:
-            load_loras_blocks(self, lorans, lorars, te_multipliers, unet_multipliers, elements, ltype, starts=starts)
+        if self.isnet: ltype = "nets"
+        if forge: ltype = "forge"
+        if go_lbw or load: load_loras_blocks(self, lorans,lorars,te_multipliers,unet_multipliers,elements,ltype, starts=starts)
 
 def stepsdealer(step, start, stop):
     if step is None or "-" not in step:
@@ -1002,16 +901,13 @@ def settolist(ls,vs):
     for l, v in zip(ls,vs):
         l.append(v)
 
-def syntaxdealer(items, target, index):
+def syntaxdealer(items,target,index): #type "unet=", "x=", "lwbe=" 
     for item in items:
         if target in item:
             return item.replace(target,"")
-    if index is None or index + 1 > len(items): 
-        return None
-    if "=" in items[index]:
-        return None
-    # Don't process weight strings here - just return the raw value
-    return items[index]
+    if index is None or index + 1> len(items): return None
+    if "=" in items[index]:return None
+    return items[index] if "@" not in items[index] else 1
 
 def isfloat(t):
     try:
@@ -1021,51 +917,14 @@ def isfloat(t):
         return False
 
 def multidealer(t, u):
-    # Handle LoRA Control format (@) syntax
-    def parse_lora_ctl(value):
-        if isinstance(value, str) and '@' in value:
-            parts = [part.strip() for part in value.split(',')]
-            weights = []
-            for part in parts:
-                if '@' in part:
-                    weight, _ = part.split('@')
-                    weights.append(float(weight))
-                else:
-                    weights.append(float(part))
-            return weights[0] if len(weights) == 1 else weights
-        return value
-
-    # Parse potential LoRA Control syntax
-    t = parse_lora_ctl(t)
-    u = parse_lora_ctl(u)
-
-    # Convert comma-separated strings to lists
-    if isinstance(t, str) and ',' in t:
-        t = [float(x.strip()) for x in t.split(',')]
-    if isinstance(u, str) and ',' in u:
-        u = [float(x.strip()) for x in u.split(',')]
-        
-    # Handle list inputs
-    if isinstance(t, list) and isinstance(u, list):
-        return t, u
-    elif isinstance(t, list):
-        return t, t
-    elif isinstance(u, list):
-        return u, u
-        
-    # Normal te/unet multiplier handling
     if t is None and u is None:
-        return 1, 1
+        return 1,1
     elif t is None:
-        return float(u), float(u)
+        return float(u),float(u)
     elif u is None:
         return float(t), float(t)
     else:
-        try:
-            return float(t), float(u)
-        except ValueError:
-            print(f"Warning: Could not convert values to float: {t}, {u}")
-            return 1, 1
+        return float(t),float(u)
 
 re_inherited_weight = re.compile(r"X([+-])?([\d.]+)?")
 
@@ -1116,31 +975,11 @@ def load_loras_blocks(self, names, lwei,te,unet,elements,ltype = "lora", starts 
         lbwf(te, unet, lwei, elements, starts)
 
     try:
-        import sys, os
-        from pathlib import Path
-
-        # Print current working directory and script location
-        print(f"Current working directory: {os.getcwd()}")
-        print(f"Script location: {Path(__file__).absolute()}")
-
-        # Look for extensions-builtin in current directory
-        extensions_path = Path(os.getcwd()) / "extensions-builtin"
-        lora_path = str(extensions_path / "sd_webui_loractl_reforge" / "loractl" / "lib")
-        
-        print(f"Attempting to import from: {lora_path}")
-        if not Path(lora_path).exists():
-            print(f"Path does not exist: {lora_path}")
-            
-        sys.path.insert(0, lora_path)
-        import lora_ctl_network as ctl
-        print('-----------------------Imported Lora CTL extension-----------------------')
-        sys.path.remove(lora_path)
+        import sd_webui_loractl_reforge.lora_ctl_network as ctl
         for old,new in oldnew:
             if old in ctl.lora_weights.keys():
                 ctl.lora_weights[new] = ctl.lora_weights[old]
-    except Exception as e:
-        print('-----------------------Could not import lora ctl-----------------------')
-        print(f"Error: {str(e)}")
+    except:
         pass
 
 def setall(m,te,unet):
@@ -1302,47 +1141,23 @@ def lbwf(mt, mu, lwei, elemental, starts):
         n_vals = []
         errormodules = []
         lvals = [val for val in vals if val[1][0] in LORAS]
-        for v, m, l, e, s in zip(lvals, mu, lwei, elemental, starts):
-            ratio, errormodule = ratiodealer(key.replace(".", "_"), l, e)
-            # Convert multiplier to float if it's a list
-            if isinstance(m, (list, tuple)):
-                current_block = None
-                for i, block in enumerate(BLOCKS):
-                    if block in key:
-                        current_block = i
-                        break
-                m_value = m[current_block] if current_block is not None else m[0]
-            else:
-                m_value = float(m)
-            
-            n_vals.append((ratio * m_value if s is None else 0, *v[1:]))
-            if errormodule:
-                errormodules.append(errormodule)
+        for v, m, l, e ,s in zip(lvals, mu, lwei, elemental, starts):
+            ratio, errormodule = ratiodealer(key.replace(".","_"), l, e)
+            n_vals.append((ratio * m if s is None else 0, *v[1:]))
+            if errormodule:errormodules.append(errormodule)
         shared.sd_model.forge_objects_after_applying_lora.unet.patches[key] = n_vals
 
     for key, vals in shared.sd_model.forge_objects_after_applying_lora.clip.patcher.patches.items():
         n_vals = []
         lvals = [val for val in vals if val[1][0] in LORAS]
         for v, m, l, e in zip(lvals, mt, lwei, elemental):
-            ratio, errormodule = ratiodealer(key.replace(".", "_"), l, e)
-            # Convert multiplier to float if it's a list
-            if isinstance(m, (list, tuple)):
-                current_block = None
-                for i, block in enumerate(BLOCKS):
-                    if block in key:
-                        current_block = i
-                        break
-                m_value = m[current_block] if current_block is not None else m[0]
-            else:
-                m_value = float(m)
-                
-            n_vals.append((ratio * m_value, *v[1:]))
-            if errormodule:
-                errormodules.append(errormodule)
+            ratio, errormodule = ratiodealer(key.replace(".","_"), l, e)
+            n_vals.append((ratio * m, *v[1:]))
+            if errormodule:errormodules.append(errormodule)
         shared.sd_model.forge_objects_after_applying_lora.clip.patcher.patches[key] = n_vals
     
     if len(errormodules) > 0:
-        print("Unknown modules:", errormodules)
+        print("Unknown modules:",errormodules)
 
 def ratiodealer(key, lwei, elemental):
     ratio = 1
