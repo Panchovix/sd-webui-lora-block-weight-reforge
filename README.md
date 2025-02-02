@@ -1,3 +1,5 @@
+Older version of lora block weight for reforge.
+
 Thanks to hako mikan for the extension! Original repo: https://github.com/hako-mikan/sd-webui-lora-block-weight
 
 # LoRA Block Weight
